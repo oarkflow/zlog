@@ -2,7 +2,9 @@ package zlog
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
+	"time"
 )
 
 type Config struct {
@@ -24,6 +26,19 @@ type Config struct {
 	Dictionary        RedactionDictionary `json:"redaction_dictionary"`
 	ReplaceDictionary bool                `json:"replace_redaction_dictionary"`
 	ValueScan         *bool               `json:"value_scan"`
+	IntegrityKey      string              `json:"integrity_key"`
+	AddHostname       bool                `json:"add_hostname"`
+	AddPID            bool                `json:"add_pid"`
+	AsyncCapacity     int                 `json:"async_capacity"`
+	AsyncBatchSize    int                 `json:"async_batch_size"`
+	DurableSpoolDir   string              `json:"durable_spool_dir"`
+	DeliveryMode      string              `json:"delivery_mode"`
+	Exporter          string              `json:"exporter"` // http, otlp_http, loki, opensearch, webhook
+	Endpoint          string              `json:"endpoint"`
+	Headers           map[string]string   `json:"headers"`
+	RetryAttempts     int                 `json:"retry_attempts"`
+	RetryMinBackoff   string              `json:"retry_min_backoff"`
+	RetryMaxBackoff   string              `json:"retry_max_backoff"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -47,7 +62,24 @@ func FromConfig(c Config) (*Logger, error) {
 		enc = NewJSONEncoder()
 	}
 	var sink Sink
-	if c.File != "" {
+	if c.Endpoint != "" {
+		headers := http.Header{}
+		for k, v := range c.Headers {
+			headers.Set(k, v)
+		}
+		switch c.Exporter {
+		case "otlp_http", "otlp":
+			sink = NewOTLPHTTPExporter(c.Endpoint, headers)
+		case "loki":
+			sink = NewLokiSink(c.Endpoint, headers)
+		case "opensearch", "elasticsearch":
+			sink = NewOpenSearchSink(c.Endpoint, headers)
+		case "webhook", "http", "":
+			sink = NewWebhookSink(c.Endpoint, headers)
+		default:
+			sink = NewWebhookSink(c.Endpoint, headers)
+		}
+	} else if c.File != "" {
 		f, err := NewRotatingFile(FileConfig{Path: c.File, MaxSize: c.MaxSize, Compress: true, MaxBackups: 10})
 		if err != nil {
 			return nil, err
@@ -56,8 +88,24 @@ func FromConfig(c Config) (*Logger, error) {
 	} else {
 		sink = NewWriterSink(os.Stdout, enc, TraceLevel)
 	}
+	if c.RetryAttempts > 0 {
+		minBackoff, _ := time.ParseDuration(c.RetryMinBackoff)
+		maxBackoff, _ := time.ParseDuration(c.RetryMaxBackoff)
+		sink = NewRetrySink(sink, RetryOptions{Attempts: c.RetryAttempts, MinBackoff: minBackoff, MaxBackoff: maxBackoff})
+	}
+	if c.DurableSpoolDir != "" {
+		mode := SpoolOnFailure
+		if c.DeliveryMode == "audit_strict" {
+			mode = AuditStrict
+		}
+		d, err := NewDurableSink(sink, DurableSinkOptions{Dir: c.DurableSpoolDir, Mode: mode})
+		if err != nil {
+			return nil, err
+		}
+		sink = d
+	}
 	redactor := redactorFromConfig(c)
-	return New(Options{Level: lvl, Sink: sink, Async: c.Async, AddCaller: c.AddCaller, Redactor: redactor, DisableRedaction: c.DisableRedaction}), nil
+	return New(Options{Level: lvl, Sink: sink, Async: c.Async, AsyncOptions: AsyncOptions{Capacity: c.AsyncCapacity, BatchSize: c.AsyncBatchSize}, AddCaller: c.AddCaller, Redactor: redactor, DisableRedaction: c.DisableRedaction, IntegrityKey: []byte(c.IntegrityKey), AddHostname: c.AddHostname, AddPID: c.AddPID}), nil
 }
 
 func redactorFromConfig(c Config) Redactor {

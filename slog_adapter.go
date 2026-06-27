@@ -7,9 +7,9 @@ import (
 )
 
 type SlogHandler struct {
-	l     *Logger
-	attrs []slog.Attr
-	group string
+	l      *Logger
+	attrs  []slog.Attr
+	groups []string
 }
 
 func NewSlogHandler(l *Logger) *SlogHandler { return &SlogHandler{l: l} }
@@ -22,6 +22,11 @@ func (h *SlogHandler) Handle(ctx context.Context, r slog.Record) error {
 		attrs = append(attrs, fromSlogAttr(a))
 	}
 	r.Attrs(func(a slog.Attr) bool { attrs = append(attrs, fromSlogAttr(a)); return true })
+	for i := len(h.groups) - 1; i >= 0; i-- {
+		if h.groups[i] != "" {
+			attrs = []Attr{Group(h.groups[i], attrs...)}
+		}
+	}
 	rec := Record{Time: r.Time, Level: fromSlogLevel(r.Level), Message: r.Message, Logger: h.l.name}
 	if h.l.addSequence {
 		rec.Sequence = nextSeq()
@@ -37,7 +42,11 @@ func (h *SlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	cp.attrs = append(append([]slog.Attr(nil), h.attrs...), attrs...)
 	return &cp
 }
-func (h *SlogHandler) WithGroup(name string) slog.Handler { cp := *h; cp.group = name; return &cp }
+func (h *SlogHandler) WithGroup(name string) slog.Handler {
+	cp := *h
+	cp.groups = append(append([]string(nil), h.groups...), name)
+	return &cp
+}
 func fromSlogLevel(l slog.Level) Level {
 	if l <= slog.LevelDebug {
 		return DebugLevel

@@ -146,3 +146,18 @@ func (m *MultiSink) Stats() SinkStats {
 	}
 	return st
 }
+
+// Write writes an already-encoded log payload to the underlying writer. It is used by durable spool replay and exporter batching.
+func (s *WriterSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	n, err := s.w.Write(p)
+	s.mu.Unlock()
+	if err != nil {
+		s.stats.failed.Add(1)
+		s.stats.last.Store(err.Error())
+		return n, err
+	}
+	s.stats.written.Add(1)
+	s.stats.bytes.Add(uint64(n))
+	return n, nil
+}

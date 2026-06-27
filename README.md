@@ -312,3 +312,44 @@ handler := zlog.HTTPMiddleware(zlog.HTTPMiddlewareOptions{
 ### Operational controls still required
 
 For enterprise and regulated environments, combine this logger with restricted log access, encryption at rest, transport encryption, short retention for sensitive logs, immutable audit storage where required, centralized review/alerting, and tests that assert representative PII/PHI/PCI examples do not appear in emitted logs.
+
+## Enterprise/platform additions
+
+This build includes production platform primitives beyond the core logger:
+
+- Durable disk-backed spool with replay and dead-letter support: `NewDurableSink`.
+- Retry and circuit-breaker sink wrappers: `NewRetrySink`, `NewCircuitBreakerSink`.
+- Exporter helpers for OTLP HTTP, Loki, OpenSearch/Elasticsearch and generic webhooks.
+- Runtime config loading and hot level reload: `FromConfig`, `WatchConfig`, `logger.WatchConfig`.
+- Prometheus and admin endpoints: `logger.PrometheusHandler()`, `logger.AdminHandler()`.
+- Corrected `slog.WithGroup` support.
+- HTTP middleware preserving `Flusher`, `Hijacker`, `Pusher`, and `ReaderFrom`, with panic stack logging, skip paths, route naming, TLS and trace context extraction.
+- Advanced samplers: token bucket, first-then-every, and message de-duplication.
+- Error enrichment helpers: `ErrWithStack`, `Stack`, `PanicStack`.
+- W3C trace context helpers: `ExtractW3CTraceparent`, `InjectTraceparent`, `ContextFromHTTP`.
+- Integrity verification APIs: `VerifyIntegrityRecords`, `VerifyIntegrityNDJSON`.
+- Local diagnostics: `RingBufferSink`, `CaptureSink`.
+- Event catalog validation: `EventCatalog` and `Logger.Event`.
+- CLI: `go run ./cmd/zlog --help` style commands: `tail`, `query`, `verify`, `redact-check`.
+
+Example config:
+
+```json
+{
+  "level": "info",
+  "format": "json",
+  "async": true,
+  "async_capacity": 8192,
+  "async_batch_size": 256,
+  "file": "./logs/app.ndjson",
+  "max_size": 104857600,
+  "integrity_key": "change-me",
+  "durable_spool_dir": "./logs/spool",
+  "retry_attempts": 5,
+  "retry_min_backoff": "100ms",
+  "retry_max_backoff": "2s",
+  "compliance": ["pii", "secrets"],
+  "add_hostname": true,
+  "add_pid": true
+}
+```
