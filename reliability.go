@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -273,7 +274,8 @@ func (d *DurableSink) Drain(ctx context.Context) error {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if _, err := d.sink.(interface{ Write([]byte) (int, error) }).Write(line); err != nil {
+		line = append(line, '\n')
+		if _, err := writeRawPayload(d.sink, line); err != nil {
 			ok = false
 			break
 		}
@@ -398,37 +400,186 @@ func writeRawPayload(s Sink, p []byte) (int, error) {
 
 // Simple NDJSON query utility used by CLI and local inspections.
 type QueryOptions struct {
-	Level    string
-	Field    string
-	Value    string
-	Contains string
-	Limit    int
+	Level         string
+	Field         string
+	Value         string
+	Contains      string
+	RequestID     string
+	CorrelationID string
+	TraceID       string
+	SpanID        string
+	ParentSpanID  string
+	UserID        string
+	TenantID      string
+	Service       string
+	Tool          string
+	WorkflowID    string
+	TaskID        string
+	SortBy        string // time, level, message, duration/span.duration or any field key
+	Desc          bool
+	Limit         int
+}
+
+type queryLine struct {
+	line string
+	m    map[string]any
 }
 
 func QueryNDJSON(r io.Reader, w io.Writer, q QueryOptions) error {
 	sc := bufio.NewScanner(r)
-	n := 0
+	var rows []queryLine
 	for sc.Scan() {
-		line := sc.Bytes()
+		line := append([]byte(nil), sc.Bytes()...)
 		var m map[string]any
 		if json.Unmarshal(line, &m) != nil {
 			continue
 		}
-		if q.Level != "" && !strings.EqualFold(fmt.Sprint(m["level"]), q.Level) && !strings.EqualFold(fmt.Sprint(m["log.level"]), q.Level) {
+		if !queryMatch(m, string(line), q) {
 			continue
 		}
-		if q.Field != "" && fmt.Sprint(m[q.Field]) != q.Value {
-			continue
-		}
-		if q.Contains != "" && !bytes.Contains(line, []byte(q.Contains)) {
-			continue
-		}
-		_, _ = w.Write(line)
-		_, _ = w.Write([]byte("\n"))
-		n++
-		if q.Limit > 0 && n >= q.Limit {
+		rows = append(rows, queryLine{line: string(line), m: m})
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if q.SortBy != "" {
+		sort.SliceStable(rows, func(i, j int) bool {
+			cmp := compareQueryValues(fieldValue(rows[i].m, q.SortBy), fieldValue(rows[j].m, q.SortBy))
+			if q.Desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		})
+	}
+	for i, row := range rows {
+		if q.Limit > 0 && i >= q.Limit {
 			break
 		}
+		_, _ = w.Write([]byte(row.line))
+		_, _ = w.Write([]byte("\n"))
 	}
-	return sc.Err()
+	return nil
+}
+
+func queryMatch(m map[string]any, line string, q QueryOptions) bool {
+	if q.Level != "" && !strings.EqualFold(fmt.Sprint(fieldValue(m, "level")), q.Level) && !strings.EqualFold(fmt.Sprint(fieldValue(m, "log.level")), q.Level) {
+		return false
+	}
+	if q.Field != "" && fmt.Sprint(fieldValue(m, q.Field)) != q.Value {
+		return false
+	}
+	if q.RequestID != "" && fmt.Sprint(fieldValue(m, "request_id")) != q.RequestID {
+		return false
+	}
+	if q.CorrelationID != "" && fmt.Sprint(fieldValue(m, "correlation_id")) != q.CorrelationID {
+		return false
+	}
+	if q.TraceID != "" && fmt.Sprint(fieldValue(m, "trace_id")) != q.TraceID {
+		return false
+	}
+	if q.SpanID != "" && fmt.Sprint(fieldValue(m, "span_id")) != q.SpanID {
+		return false
+	}
+	if q.ParentSpanID != "" && fmt.Sprint(fieldValue(m, "parent_span_id")) != q.ParentSpanID {
+		return false
+	}
+	if q.UserID != "" && fmt.Sprint(fieldValue(m, "user_id")) != q.UserID {
+		return false
+	}
+	if q.TenantID != "" && fmt.Sprint(fieldValue(m, "tenant_id")) != q.TenantID {
+		return false
+	}
+	if q.Service != "" && fmt.Sprint(fieldValue(m, "service.name")) != q.Service {
+		return false
+	}
+	if q.Tool != "" && fmt.Sprint(fieldValue(m, "tool.name")) != q.Tool {
+		return false
+	}
+	if q.WorkflowID != "" && fmt.Sprint(fieldValue(m, "workflow.id")) != q.WorkflowID {
+		return false
+	}
+	if q.TaskID != "" && fmt.Sprint(fieldValue(m, "task.id")) != q.TaskID {
+		return false
+	}
+	if q.Contains != "" && !bytes.Contains([]byte(line), []byte(q.Contains)) {
+		return false
+	}
+	return true
+}
+
+func fieldValue(m map[string]any, key string) any {
+	if key == "duration" {
+		if v, ok := m["duration"]; ok {
+			return v
+		}
+		if v, ok := m["span.duration"]; ok {
+			return v
+		}
+	}
+	if v, ok := m[key]; ok {
+		return v
+	}
+	parts := strings.Split(key, ".")
+	var cur any = m
+	for _, p := range parts {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = mm[p]
+	}
+	return cur
+}
+
+func compareQueryValues(a, b any) int {
+	af, aok := asFloat(a)
+	bf, bok := asFloat(b)
+	if aok && bok {
+		if af < bf {
+			return -1
+		}
+		if af > bf {
+			return 1
+		}
+		return 0
+	}
+	as, bs := fmt.Sprint(a), fmt.Sprint(b)
+	if at, err := time.Parse(time.RFC3339Nano, as); err == nil {
+		if bt, err := time.Parse(time.RFC3339Nano, bs); err == nil {
+			if at.Before(bt) {
+				return -1
+			}
+			if at.After(bt) {
+				return 1
+			}
+			return 0
+		}
+	}
+	if as < bs {
+		return -1
+	}
+	if as > bs {
+		return 1
+	}
+	return 0
+}
+func asFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case json.Number:
+		f, err := x.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(x, 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }

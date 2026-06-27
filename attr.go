@@ -109,3 +109,12 @@ func ActorID(v string) Attr        { return String("actor.id", v) }
 func ServiceName(v string) Attr    { return String("service.name", v) }
 func ServiceVersion(v string) Attr { return String("service.version", v) }
 func Environment(v string) Attr    { return String("deployment.environment", v) }
+
+func ParentSpanID(v string) Attr { return String("parent_span_id", v) }
+func SpanName(v string) Attr     { return String("span.name", v) }
+func SpanKind(v string) Attr     { return String("span.kind", v) }
+func SpanStatus(v string) Attr   { return String("span.status", v) }
+func ToolName(v string) Attr     { return String("tool.name", v) }
+func ToolCallID(v string) Attr   { return String("tool.call_id", v) }
+func WorkflowID(v string) Attr   { return String("workflow.id", v) }
+func TaskID(v string) Attr       { return String("task.id", v) }

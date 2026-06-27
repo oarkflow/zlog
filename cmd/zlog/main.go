@@ -11,7 +11,7 @@ import (
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "zlog commands:\n  tail <file>\n  query [--level error] [--field k --value v] [--contains text] <file>\n  verify --key secret <file>\n  redact-check <file>\n")
+	fmt.Fprintf(os.Stderr, "zlog commands:\n  tail <file>\n  query [--level error] [--request-id id] [--trace-id id] [--user-id id] [--service name] [--tool name] [--sort time] <file>\n  verify --key secret <file>\n  redact-check <file>\n")
 }
 func main() {
 	if len(os.Args) < 2 {
@@ -33,6 +33,19 @@ func main() {
 		field := fs.String("field", "", "")
 		value := fs.String("value", "", "")
 		contains := fs.String("contains", "", "")
+		requestID := fs.String("request-id", "", "")
+		correlationID := fs.String("correlation-id", "", "")
+		traceID := fs.String("trace-id", "", "")
+		spanID := fs.String("span-id", "", "")
+		parentSpanID := fs.String("parent-span-id", "", "")
+		userID := fs.String("user-id", "", "")
+		tenantID := fs.String("tenant-id", "", "")
+		service := fs.String("service", "", "")
+		tool := fs.String("tool", "", "")
+		workflowID := fs.String("workflow-id", "", "")
+		taskID := fs.String("task-id", "", "")
+		sortBy := fs.String("sort", "", "")
+		desc := fs.Bool("desc", false, "")
 		limit := fs.Int("limit", 0, "")
 		_ = fs.Parse(os.Args[2:])
 		if fs.NArg() < 1 {
@@ -44,7 +57,7 @@ func main() {
 			fatal(err)
 		}
 		defer f.Close()
-		fatalIf(zlog.QueryNDJSON(f, os.Stdout, zlog.QueryOptions{Level: *level, Field: *field, Value: *value, Contains: *contains, Limit: *limit}))
+		fatalIf(zlog.QueryNDJSON(f, os.Stdout, zlog.QueryOptions{Level: *level, Field: *field, Value: *value, Contains: *contains, RequestID: *requestID, CorrelationID: *correlationID, TraceID: *traceID, SpanID: *spanID, ParentSpanID: *parentSpanID, UserID: *userID, TenantID: *tenantID, Service: *service, Tool: *tool, WorkflowID: *workflowID, TaskID: *taskID, SortBy: *sortBy, Desc: *desc, Limit: *limit}))
 	case "verify":
 		fs := flag.NewFlagSet("verify", flag.ExitOnError)
 		key := fs.String("key", "", "")

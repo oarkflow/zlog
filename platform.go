@@ -2,6 +2,7 @@ package zlog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -245,11 +246,40 @@ func InjectTraceparent(ctx context.Context, h http.Header) {
 }
 func ContextFromHTTP(r *http.Request) context.Context {
 	ctx := r.Context()
+	lc := LogContext{}
 	if tc, ok := ExtractW3CTraceparent(r.Header.Get("traceparent")); ok {
-		ctx = ContextWithTrace(ctx, tc)
-		ctx = ContextWithAttrs(ctx, TraceID(tc.TraceID), SpanID(tc.SpanID), String("trace_flags", tc.TraceFlags))
+		lc.TraceID = tc.TraceID
+		lc.SpanID = tc.SpanID
+		lc.TraceFlags = tc.TraceFlags
 	}
-	return ctx
+	if v := r.Header.Get("X-Request-Id"); v != "" {
+		lc.RequestID = v
+	}
+	if v := r.Header.Get("X-Correlation-Id"); v != "" {
+		lc.CorrelationID = v
+	}
+	if v := r.Header.Get("X-User-Id"); v != "" {
+		lc.UserID = v
+	}
+	if v := r.Header.Get("X-Tenant-Id"); v != "" {
+		lc.TenantID = v
+	}
+	if v := r.Header.Get("X-Service-Name"); v != "" {
+		lc.ServiceName = v
+	}
+	if v := r.Header.Get("X-Service-Version"); v != "" {
+		lc.ServiceVersion = v
+	}
+	if v := r.Header.Get("X-Tool-Name"); v != "" {
+		lc.ToolName = v
+	}
+	if v := r.Header.Get("X-Tool-Call-Id"); v != "" {
+		lc.ToolCallID = v
+	}
+	if b := ExtractBaggage(r.Header.Get("baggage")); len(b) > 0 {
+		lc.Baggage = b
+	}
+	return ContextWithLogContext(ctx, lc)
 }
 
 // Syslog sink.
@@ -306,32 +336,17 @@ func VerifyIntegrityNDJSON(r io.Reader, key []byte) (IntegrityReport, error) {
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
-		var m map[string]any
-		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
 			continue
 		}
-		got := fmt.Sprint(m["log.integrity.hmac"])
-		if got == "" || got == "<nil>" {
+		got, unsigned, ok := stripIntegrityField(line)
+		if !ok {
 			continue
 		}
 		mac := hmac.New(sha256.New, key)
 		mac.Write(prev[:])
-		mac.Write([]byte(fmt.Sprint(m["sequence"])))
-		mac.Write([]byte(fmt.Sprint(m["level"])))
-		mac.Write([]byte(fmt.Sprint(m["message"])))
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			if k == "time" || k == "level" || k == "message" || k == "logger" || k == "sequence" || k == "caller" || k == "log.integrity.hmac" {
-				continue
-			}
-			keys = append(keys, k)
-		} // deterministic fallback: sorted map order for verification of regular JSON output
-		for _, k := range keys {
-			mac.Write([]byte(k))
-			mac.Write([]byte{0})
-			mac.Write([]byte(fmt.Sprint(m[k])))
-			mac.Write([]byte{0})
-		}
+		mac.Write(unsigned)
 		sum := mac.Sum(nil)
 		want := hex.EncodeToString(sum)
 		rep.Total++
@@ -347,6 +362,27 @@ func VerifyIntegrityNDJSON(r io.Reader, key []byte) (IntegrityReport, error) {
 		}
 	}
 	return rep, sc.Err()
+}
+
+func stripIntegrityField(line []byte) (string, []byte, bool) {
+	needle := []byte(`,"log.integrity.hmac":"`)
+	i := bytes.LastIndex(line, needle)
+	if i < 0 {
+		return "", nil, false
+	}
+	start := i + len(needle)
+	end := start
+	for end < len(line) && line[end] != '"' {
+		end++
+	}
+	if end >= len(line) {
+		return "", nil, false
+	}
+	got := string(line[start:end])
+	unsigned := make([]byte, 0, len(line)-(end-i))
+	unsigned = append(unsigned, line[:i]...)
+	unsigned = append(unsigned, line[end+1:]...)
+	return got, unsigned, true
 }
 
 // Local ring buffer sink for diagnostics.

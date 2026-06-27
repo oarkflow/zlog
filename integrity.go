@@ -1,6 +1,7 @@
 package zlog
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -32,15 +33,11 @@ func (s *IntegritySigner) SignRecord(r Record, static []Attr) Attr {
 	defer s.mu.Unlock()
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write(s.prev[:])
-	mac.Write([]byte(strconv.FormatUint(r.Sequence, 10)))
-	mac.Write([]byte(r.Level.String()))
-	mac.Write([]byte(r.Message))
-	for i := range static {
-		writeAttrMAC(mac, static[i])
-	}
-	for i := 0; i < r.AttrLen(); i++ {
-		writeAttrMAC(mac, r.AttrAt(i))
-	}
+	var buf bytes.Buffer
+	enc := NewJSONEncoder()
+	enc.Newline = false
+	_ = enc.Encode(&buf, r, static)
+	mac.Write(buf.Bytes())
 	sum := mac.Sum(nil)
 	copy(s.prev[:], sum)
 	return String("log.integrity.hmac", hex.EncodeToString(sum))

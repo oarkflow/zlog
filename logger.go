@@ -205,11 +205,32 @@ func (l *Logger) Panic(msg string, attrs ...Attr) {
 	_ = l.Flush()
 	panic(msg)
 }
+func (l *Logger) LogContext(ctx context.Context, level Level, msg string, attrs ...Attr) {
+	if !l.Enabled(level) {
+		return
+	}
+	l.writeSlice(level, msg, append(extractContextAttrs(ctx), attrs...))
+}
+func (l *Logger) TraceContext(ctx context.Context, msg string, attrs ...Attr) {
+	l.LogContext(ctx, TraceLevel, msg, attrs...)
+}
+func (l *Logger) DebugContext(ctx context.Context, msg string, attrs ...Attr) {
+	l.LogContext(ctx, DebugLevel, msg, attrs...)
+}
 func (l *Logger) InfoContext(ctx context.Context, msg string, attrs ...Attr) {
-	l.Log(InfoLevel, msg, append(extractContextAttrs(ctx), attrs...)...)
+	l.LogContext(ctx, InfoLevel, msg, attrs...)
+}
+func (l *Logger) NoticeContext(ctx context.Context, msg string, attrs ...Attr) {
+	l.LogContext(ctx, NoticeLevel, msg, attrs...)
+}
+func (l *Logger) WarnContext(ctx context.Context, msg string, attrs ...Attr) {
+	l.LogContext(ctx, WarnLevel, msg, attrs...)
 }
 func (l *Logger) ErrorContext(ctx context.Context, msg string, attrs ...Attr) {
-	l.Log(ErrorLevel, msg, append(extractContextAttrs(ctx), attrs...)...)
+	l.LogContext(ctx, ErrorLevel, msg, attrs...)
+}
+func (l *Logger) CriticalContext(ctx context.Context, msg string, attrs ...Attr) {
+	l.LogContext(ctx, CriticalLevel, msg, attrs...)
 }
 func (l *Logger) write(level Level, msg string, attrs ...Attr) {
 	l.writeSlice(level, msg, attrs)

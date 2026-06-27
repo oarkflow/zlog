@@ -353,3 +353,94 @@ Example config:
   "add_pid": true
 }
 ```
+
+## Context and span-based logging
+
+`zlog` can now carry correlation metadata through `context.Context` and emit it on every related log line. This makes logs easy to filter by request, user, tenant, service, tool call, workflow task, trace, span, or parent span.
+
+```go
+ctx := context.Background()
+ctx = zlog.ContextWithRequestID(ctx, "req_123")
+ctx = zlog.ContextWithUserID(ctx, "user_42")
+ctx = zlog.ContextWithTenantID(ctx, "tenant_a")
+ctx = zlog.ContextWithService(ctx, "sms-api", "1.4.0", "prod")
+ctx = zlog.ContextWithTool(ctx, "sms_sender", "tool_call_789")
+ctx = zlog.ContextWithWorkflow(ctx, "notification_flow", "task_001")
+
+ctx, span := log.StartSpan(ctx, "send.sms", zlog.WithSpanKind(zlog.SpanKindTool), zlog.WithSpanStartEvent(true))
+defer span.End()
+
+log.InfoContext(ctx, "sms.validation.started")
+log.InfoContext(ctx, "sms.provider.request", zlog.String("provider", "twilio"))
+```
+
+Each line receives fields such as:
+
+```json
+{
+  "request_id": "req_123",
+  "user_id": "user_42",
+  "tenant_id": "tenant_a",
+  "service.name": "sms-api",
+  "tool.name": "sms_sender",
+  "tool.call_id": "tool_call_789",
+  "workflow.id": "notification_flow",
+  "task.id": "task_001",
+  "trace_id": "...",
+  "span_id": "...",
+  "parent_span_id": "...",
+  "span.name": "send.sms",
+  "span.kind": "tool"
+}
+```
+
+Span APIs:
+
+- `StartSpan(ctx, logger, name, opts...)`
+- `logger.StartSpan(ctx, name, opts...)`
+- `span.End(attrs...)`
+- `span.EndError(err, attrs...)`
+- `span.Info/Debug/Error(...)`
+- `WithSpanKind`, `WithSpanTraceID`, `WithSpanID`, `WithParentSpanID`, `WithSpanAttrs`, `WithSpanStartEvent`
+
+Context APIs:
+
+- `ContextWithLogContext`
+- `ContextWithRequestID`
+- `ContextWithCorrelationID`
+- `ContextWithUserID`
+- `ContextWithTenantID`
+- `ContextWithService`
+- `ContextWithTool`
+- `ContextWithWorkflow`
+- `ContextWithBaggage`
+- `LogContextFromContext`
+
+HTTP propagation:
+
+`ContextFromHTTP` extracts `traceparent`, `baggage`, `X-Request-Id`, `X-Correlation-Id`, `X-User-Id`, `X-Tenant-Id`, `X-Service-Name`, `X-Service-Version`, `X-Tool-Name`, and `X-Tool-Call-Id`. Use `InjectTraceparent` and `InjectBaggage` for outbound requests.
+
+CLI filtering and sorting:
+
+```bash
+go run ./cmd/zlog query --request-id req_123 ./logs/app.ndjson
+go run ./cmd/zlog query --trace-id <trace_id> --sort time ./logs/app.ndjson
+go run ./cmd/zlog query --user-id user_42 --service sms-api --tool sms_sender ./logs/app.ndjson
+go run ./cmd/zlog query --field span.name --value send.sms --sort span.duration --desc ./logs/app.ndjson
+```
+
+## Complete context/span example
+
+Run the full platform example:
+
+```bash
+./scripts/run_complete_example.sh
+```
+
+Or run manually:
+
+```bash
+go run ./examples/complete -addr :8085 -log-dir ./tmp/zlog-complete
+```
+
+It demonstrates request/user/tenant/service/workflow/task/tool context, parent-child spans, HTTP propagation, durable exporter spool, admin/metrics endpoints, redaction, local querying and HMAC verification. See `examples/complete/README.md` for the full walkthrough.

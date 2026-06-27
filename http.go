@@ -93,9 +93,11 @@ func HTTPMiddleware(opts HTTPMiddlewareOptions) func(http.Handler) http.Handler 
 			}
 			start := time.Now()
 			rw := &responseCapture{ResponseWriter: w}
+			ctx := ContextFromHTTP(r)
+			req := r.WithContext(ctx)
 			defer func() {
 				if rec := recover(); rec != nil {
-					l.ErrorContext(r.Context(), "http.panic", PanicStack(rec))
+					l.ErrorContext(req.Context(), "http.panic", PanicStack(rec))
 					if !rw.wrote {
 						http.Error(rw, "internal server error", 500)
 					}
@@ -128,10 +130,9 @@ func HTTPMiddleware(opts HTTPMiddlewareOptions) func(http.Handler) http.Handler 
 				} else if status >= 400 {
 					lvl = WarnLevel
 				}
-				l.Log(lvl, "http.request", attrs...)
+				l.LogContext(req.Context(), lvl, "http.request", attrs...)
 			}()
-			ctx := ContextFromHTTP(r)
-			next.ServeHTTP(rw, r.WithContext(ctx))
+			next.ServeHTTP(rw, req)
 		})
 	}
 }
