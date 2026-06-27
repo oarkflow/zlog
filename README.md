@@ -444,3 +444,129 @@ go run ./examples/complete -addr :8085 -log-dir ./tmp/zlog-complete
 ```
 
 It demonstrates request/user/tenant/service/workflow/task/tool context, parent-child spans, HTTP propagation, durable exporter spool, admin/metrics endpoints, redaction, local querying and HMAC verification. See `examples/complete/README.md` for the full walkthrough.
+
+## Built-in multi-service observability platform
+
+`zlog` now includes an optional in-process observability layer for collecting and exploring logs, spans/traces, and service/node metrics from many services.
+
+### What it provides
+
+- Multi-service log ingestion and query API
+- Span/trace ingestion and query API
+- Service/node metric ingestion API
+- Prometheus text metric ingestion endpoint
+- In-memory bounded observability store for local/dev/single-node deployments
+- `ObservabilitySink` to mirror normal logger records into the observability store
+- Service/node health summaries with log counts, error counts, span counts, metric counts, p95 latency, and last-seen timestamps
+- Web dashboard similar in spirit to lightweight Grafana/Pyroscope-style operational views:
+  - Overview cards
+  - Traffic/error/span line charts
+  - Log-level and service bar charts
+  - Service and node inventory with log/span/metric graphs
+  - Logs table with request/user/trace filters
+  - Informative trace tree with parent-child indentation and span timeline bars
+  - Latency p95 and span-volume charts
+  - Metric-volume and top-metric charts
+  - Click service/log/span/trace/metric rows to open a details drawer with related navigation
+  - Drill from a service to logs, traces, and metrics
+  - Drill from a trace/span to trace logs and related request/user/tool filters
+  - Hover any table/chart/trace row to inspect the complete JSON model; the JSON hover follows the pointer and repositions to stay inside the viewport
+- JSON APIs for integrating an external UI, collector, or long-term storage backend later
+- Chart aggregation API at `/api/v1/charts?since=1h`
+
+### Run the complete observability dashboard
+
+```bash
+./scripts/run_observability_example.sh
+```
+
+Then open:
+
+```text
+http://localhost:8090
+```
+
+The example simulates three services running on different nodes:
+
+- `api-gateway` on `node-a`
+- `workflow-engine` on `node-b`
+- `sms-service` on `node-c`
+
+It continuously emits:
+
+- correlated logs
+- request IDs
+- user IDs
+- tenant IDs
+- service metadata
+- node metadata
+- parent/child spans
+- tool-call spans
+- workflow/task IDs
+- service metrics such as request count, CPU usage, memory usage, and queue depth
+
+### API examples
+
+```bash
+curl 'http://localhost:8090/api/v1/overview'
+curl 'http://localhost:8090/api/v1/services'
+curl 'http://localhost:8090/api/v1/charts?since=1h'
+curl 'http://localhost:8090/api/v1/logs?service=api-gateway&limit=20&desc=true'
+curl 'http://localhost:8090/api/v1/logs?request_id=req-000001'
+curl 'http://localhost:8090/api/v1/spans?sort=duration&desc=true&limit=20'
+curl 'http://localhost:8090/api/v1/metrics?service=sms-service&name=cpu_usage_percent'
+```
+
+### Programmatic setup
+
+```go
+store := zlog.NewObservabilityStore(zlog.ObservabilityOptions{
+    MaxLogs:    100000,
+    MaxSpans:   100000,
+    MaxMetrics: 200000,
+})
+
+sink := zlog.NewObservabilitySink(store, zlog.NewWriterSink(os.Stdout, zlog.NewJSONEncoder(), zlog.InfoLevel))
+logger := zlog.New(zlog.Options{Level: zlog.DebugLevel, Sink: sink})
+
+mux := http.NewServeMux()
+mux.Handle("/", zlog.NewObservabilityHandler(store))
+http.ListenAndServe(":8090", mux)
+```
+
+### Ingest from other services
+
+Logs:
+
+```bash
+curl -X POST http://localhost:8090/api/v1/logs \
+  -H 'content-type: application/json' \
+  -d '{"time":"2026-01-01T00:00:00Z","level":"info","message":"accepted","service":"api","node":"node-a","request_id":"req-1","trace_id":"trace-1","user_id":"user-1"}'
+```
+
+Spans:
+
+```bash
+curl -X POST http://localhost:8090/api/v1/spans \
+  -H 'content-type: application/json' \
+  -d '{"trace_id":"trace-1","span_id":"span-1","name":"send.sms","service":"sms","node":"node-c","duration_ns":12000000,"status":"ok"}'
+```
+
+Metrics:
+
+```bash
+curl -X POST http://localhost:8090/api/v1/metrics \
+  -H 'content-type: application/json' \
+  -d '{"name":"queue_depth","value":17,"service":"workflow-engine","node":"node-b","type":"gauge"}'
+```
+
+Prometheus text metrics:
+
+```bash
+curl -X POST 'http://localhost:8090/api/v1/prometheus?service=api-gateway&node=node-a' \
+  --data-binary $'http_requests_total{route="/api/send"} 42\ncpu_usage_percent 31.5\n'
+```
+
+### Notes
+
+The built-in store is intentionally dependency-free and in-memory. It is ideal for development, demos, local debugging, embedded operational dashboards, and lightweight deployments. For long-term retention, high cardinality analytics, and very large clusters, the same ingestion APIs can be backed by a durable store later.
