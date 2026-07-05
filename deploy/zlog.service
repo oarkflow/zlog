@@ -1,0 +1,21 @@
+[Unit]
+Description=zlog observability dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zlog
+Group=zlog
+Environment=ZLOG_ADMIN_KEY=replace-me
+ExecStart=/usr/local/bin/zlog serve-dashboard --addr :8088 --dir /var/lib/zlog --api-key ${ZLOG_ADMIN_KEY}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zlog
+
+[Install]
+WantedBy=multi-user.target

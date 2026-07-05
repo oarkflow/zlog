@@ -481,11 +481,11 @@ func slowTraceRows(durs map[string]int64, services map[string]map[string]struct{
 
 // ObservabilitySink mirrors local logger records into the observability store.
 type ObservabilitySink struct {
-	Store *ObservabilityStore
+	Store ObservabilityBackend
 	Next  Sink
 }
 
-func NewObservabilitySink(store *ObservabilityStore, next Sink) *ObservabilitySink {
+func NewObservabilitySink(store ObservabilityBackend, next Sink) *ObservabilitySink {
 	return &ObservabilitySink{Store: store, Next: next}
 }
 func (s *ObservabilitySink) WriteRecord(r Record, static []Attr) error {
@@ -571,18 +571,27 @@ func recordToObsSpan(r Record, static []Attr) (ObsSpan, bool) {
 
 // ObservabilityHandler exposes ingestion, query APIs, and a built-in dashboard UI.
 type ObservabilityHandler struct {
-	Store  *ObservabilityStore
+	Store  ObservabilityBackend
 	Title  string
 	Prefix string
+	Auth   AdminAuthOptions
 }
 
-func NewObservabilityHandler(store *ObservabilityStore) *ObservabilityHandler {
+func NewObservabilityHandler(store ObservabilityBackend) *ObservabilityHandler {
 	if store == nil {
 		store = NewObservabilityStore(ObservabilityOptions{})
 	}
 	return &ObservabilityHandler{Store: store, Title: "zlog Observability", Prefix: "/"}
 }
 func (h *ObservabilityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Auth.RequireHTTPS || len(h.Auth.APIKeys) > 0 || len(h.Auth.BasicUsers) > 0 || len(h.Auth.AllowCIDRs) > 0 || len(h.Auth.AllowIPs) > 0 || h.Auth.ReadOnly {
+		SecureHandler(http.HandlerFunc(h.serveUnsafe), h.Auth).ServeHTTP(w, r)
+		return
+	}
+	h.serveUnsafe(w, r)
+}
+
+func (h *ObservabilityHandler) serveUnsafe(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, h.Prefix)
 	if h.Prefix == "/" {
 		path = strings.TrimPrefix(r.URL.Path, "/")

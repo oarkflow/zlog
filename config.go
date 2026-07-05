@@ -8,37 +8,46 @@ import (
 )
 
 type Config struct {
-	Level             string              `json:"level"`
-	Format            string              `json:"format"`
-	Async             bool                `json:"async"`
-	File              string              `json:"file"`
-	MaxSize           int64               `json:"max_size"`
-	AddCaller         bool                `json:"add_caller"`
-	DisableRedaction  bool                `json:"disable_redaction"`
-	SensitiveFields   []string            `json:"sensitive_fields"`       // substring field/path matches
-	ExactFields       []string            `json:"exact_sensitive_fields"` // exact field/path matches
-	AllowFields       []string            `json:"allow_fields"`           // exact field/path allow-list
-	RedactionMask     string              `json:"redaction_mask"`
-	HashRedaction     bool                `json:"hash_redaction"`
-	MaskPartial       bool                `json:"mask_partial"`
-	KeepLast          int                 `json:"keep_last"`
-	Compliance        []string            `json:"compliance"` // pii, hipaa, pci, secrets
-	Dictionary        RedactionDictionary `json:"redaction_dictionary"`
-	ReplaceDictionary bool                `json:"replace_redaction_dictionary"`
-	ValueScan         *bool               `json:"value_scan"`
-	IntegrityKey      string              `json:"integrity_key"`
-	AddHostname       bool                `json:"add_hostname"`
-	AddPID            bool                `json:"add_pid"`
-	AsyncCapacity     int                 `json:"async_capacity"`
-	AsyncBatchSize    int                 `json:"async_batch_size"`
-	DurableSpoolDir   string              `json:"durable_spool_dir"`
-	DeliveryMode      string              `json:"delivery_mode"`
-	Exporter          string              `json:"exporter"` // http, otlp_http, loki, opensearch, webhook
-	Endpoint          string              `json:"endpoint"`
-	Headers           map[string]string   `json:"headers"`
-	RetryAttempts     int                 `json:"retry_attempts"`
-	RetryMinBackoff   string              `json:"retry_min_backoff"`
-	RetryMaxBackoff   string              `json:"retry_max_backoff"`
+	Level               string              `json:"level"`
+	Format              string              `json:"format"`
+	Async               bool                `json:"async"`
+	File                string              `json:"file"`
+	MaxSize             int64               `json:"max_size"`
+	AddCaller           bool                `json:"add_caller"`
+	DisableRedaction    bool                `json:"disable_redaction"`
+	SensitiveFields     []string            `json:"sensitive_fields"`       // substring field/path matches
+	ExactFields         []string            `json:"exact_sensitive_fields"` // exact field/path matches
+	AllowFields         []string            `json:"allow_fields"`           // exact field/path allow-list
+	RedactionMask       string              `json:"redaction_mask"`
+	HashRedaction       bool                `json:"hash_redaction"`
+	MaskPartial         bool                `json:"mask_partial"`
+	KeepLast            int                 `json:"keep_last"`
+	Compliance          []string            `json:"compliance"` // pii, hipaa, pci, secrets
+	Dictionary          RedactionDictionary `json:"redaction_dictionary"`
+	ReplaceDictionary   bool                `json:"replace_redaction_dictionary"`
+	ValueScan           *bool               `json:"value_scan"`
+	IntegrityKey        string              `json:"integrity_key"`
+	AddHostname         bool                `json:"add_hostname"`
+	AddPID              bool                `json:"add_pid"`
+	AsyncCapacity       int                 `json:"async_capacity"`
+	AsyncBatchSize      int                 `json:"async_batch_size"`
+	DurableSpoolDir     string              `json:"durable_spool_dir"`
+	DeliveryMode        string              `json:"delivery_mode"`
+	Exporter            string              `json:"exporter"` // http, otlp_http, loki, opensearch, webhook
+	Endpoint            string              `json:"endpoint"`
+	Headers             map[string]string   `json:"headers"`
+	RetryAttempts       int                 `json:"retry_attempts"`
+	RetryMinBackoff     string              `json:"retry_min_backoff"`
+	RetryMaxBackoff     string              `json:"retry_max_backoff"`
+	EncryptedFileKey    string              `json:"encrypted_file_key"`
+	EncryptedFileKeyID  string              `json:"encrypted_file_key_id"`
+	SyncWrites          bool                `json:"sync_writes"`
+	AdminAPIKeys        []string            `json:"admin_api_keys"`
+	AdminAllowCIDRs     []string            `json:"admin_allow_cidrs"`
+	ObservabilityDir    string              `json:"observability_dir"`
+	RetentionMaxAge     string              `json:"retention_max_age"`
+	RetentionMaxRecords int                 `json:"retention_max_records"`
+	RetentionMaxBytes   int64               `json:"retention_max_bytes"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -80,11 +89,19 @@ func FromConfig(c Config) (*Logger, error) {
 			sink = NewWebhookSink(c.Endpoint, headers)
 		}
 	} else if c.File != "" {
-		f, err := NewRotatingFile(FileConfig{Path: c.File, MaxSize: c.MaxSize, Compress: true, MaxBackups: 10})
-		if err != nil {
-			return nil, err
+		if c.EncryptedFileKey != "" {
+			es, err := NewEncryptedFileSink(EncryptedFileOptions{Path: c.File, Key: []byte(c.EncryptedFileKey), KeyID: c.EncryptedFileKeyID, Encoder: enc, Level: TraceLevel, SyncWrite: c.SyncWrites})
+			if err != nil {
+				return nil, err
+			}
+			sink = es
+		} else {
+			f, err := NewRotatingFile(FileConfig{Path: c.File, MaxSize: c.MaxSize, Compress: true, MaxBackups: 10})
+			if err != nil {
+				return nil, err
+			}
+			sink = NewWriterSink(f, enc, TraceLevel)
 		}
-		sink = NewWriterSink(f, enc, TraceLevel)
 	} else {
 		sink = NewWriterSink(os.Stdout, enc, TraceLevel)
 	}

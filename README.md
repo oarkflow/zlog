@@ -570,3 +570,118 @@ curl -X POST 'http://localhost:8090/api/v1/prometheus?service=api-gateway&node=n
 ### Notes
 
 The built-in store is intentionally dependency-free and in-memory. It is ideal for development, demos, local debugging, embedded operational dashboards, and lightweight deployments. For long-term retention, high cardinality analytics, and very large clusters, the same ingestion APIs can be backed by a durable store later.
+
+## Production hardening additions
+
+This archive now includes the production features that were missing from the first pass while keeping the package stdlib-only:
+
+### Secure admin and observability endpoints
+
+Use `SecureAdminHandler` or `SecureHandler` to protect runtime endpoints with API keys, Basic auth, CIDR/IP allow-lists, HTTPS enforcement, read-only mode, and audit logging.
+
+```go
+mux.Handle("/_zlog/", zlog.SecureAdminHandler(logger, zlog.AdminAuthOptions{
+    APIKeys:    []string{"replace-me"},
+    AllowCIDRs: []string{"10.0.0.0/8", "127.0.0.0/8"},
+    AuditLogger: logger,
+}))
+```
+
+The observability dashboard also accepts the same options:
+
+```go
+obs := zlog.NewObservabilityHandler(store)
+obs.Auth = zlog.AdminAuthOptions{APIKeys: []string{"replace-me"}}
+```
+
+### Persistent observability store
+
+`NewPersistentObservabilityStore` adds local durable NDJSON storage for logs, spans, and metrics while retaining the existing fast in-memory query model.
+
+```go
+store, err := zlog.NewPersistentObservabilityStore(zlog.PersistentObservabilityOptions{
+    Dir: ".zlog-observability",
+    Retention: zlog.RetentionPolicy{
+        MaxAge: 7 * 24 * time.Hour,
+        MaxRecords: 1_000_000,
+        MaxBytes: 5 << 30,
+    },
+})
+```
+
+### Retention and compaction
+
+File-backed observability data can be compacted by age, record count, or byte size:
+
+```bash
+zlog compact-observability --dir .zlog-observability --max-age 168h --max-records 1000000
+```
+
+### Encrypted log files
+
+`NewEncryptedFileSink` encrypts each encoded log record with AES-GCM. Non-16/24/32 byte keys are normalized using SHA-256.
+
+```go
+sink, err := zlog.NewEncryptedFileSink(zlog.EncryptedFileOptions{
+    Path: "secure-logs.ndjson",
+    Key: []byte(os.Getenv("ZLOG_FILE_KEY")),
+    KeyID: "prod-2026-07",
+    Level: zlog.InfoLevel,
+})
+```
+
+Decrypt locally with:
+
+```bash
+zlog decrypt --key "$ZLOG_FILE_KEY" secure-logs.ndjson
+```
+
+### Alerting engine
+
+`AlertManager` evaluates rules from logs and spans and can write to webhook sinks or custom sinks.
+
+```go
+am := zlog.AlertManager{
+    Store: store,
+    Logger: logger,
+    Rules: []zlog.AlertRule{{
+        Name: "api-errors",
+        Service: "payments-api",
+        MinErrors: 10,
+        Window: time.Minute,
+    }},
+}
+alerts, err := am.Evaluate(context.Background())
+```
+
+Supported rule types include minimum error count, error rate, p95 latency, and silent-service checks.
+
+### YAML and BCL-style config loading
+
+In addition to JSON config, `LoadConfigAuto` supports simple YAML and BCL-style key/value config files:
+
+```bash
+zlog config validate ./zlog.yaml
+zlog config print-effective ./zlog.bcl
+```
+
+### Operational CLI commands
+
+The CLI now supports:
+
+```bash
+zlog doctor --config ./zlog.json --log-file ./app.ndjson
+zlog stats ./app.ndjson
+zlog top-errors --limit 20 ./app.ndjson
+zlog top-services --limit 20 ./app.ndjson
+zlog export --format json --level error ./app.ndjson
+zlog serve-dashboard --addr :8088 --dir .zlog-observability --api-key dev-admin-key
+zlog compact-observability --dir .zlog-observability --max-age 168h
+zlog decrypt --key "$ZLOG_FILE_KEY" ./secure-logs.ndjson
+```
+
+### Startup banner
+
+`StartupBanner` and `PrintStartupBanner` print a production-friendly startup summary including service, environment, level, format, async mode, redaction, integrity, sinks, dashboard URL, admin URL, host, and PID.
+
+See `examples/production` for an end-to-end setup with persistent observability, secure admin/dashboard endpoints, alert rules, HTTP middleware, tracing, redaction, integrity, and startup output.

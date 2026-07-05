@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zlog-admin
+stringData:
+  api-key: replace-me
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zlog-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zlog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zlog
+  template:
+    metadata:
+      labels:
+        app: zlog
+    spec:
+      containers:
+        - name: zlog
+          image: zlog:latest
+          imagePullPolicy: IfNotPresent
+          args: ["serve-dashboard", "--addr", ":8088", "--dir", "/data/zlog", "--api-key", "$(ZLOG_ADMIN_KEY)"]
+          env:
+            - name: ZLOG_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zlog-admin
+                  key: api-key
+          ports:
+            - containerPort: 8088
+          volumeMounts:
+            - name: data
+              mountPath: /data/zlog
+          readinessProbe:
+            tcpSocket:
+              port: 8088
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: zlog-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zlog
+spec:
+  selector:
+    app: zlog
+  ports:
+    - port: 8088
+      targetPort: 8088

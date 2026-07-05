@@ -1,0 +1,12 @@
+services:
+  zlog:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["serve-dashboard", "--addr", ":8088", "--dir", "/data/zlog", "--api-key", "${ZLOG_ADMIN_KEY:-dev-admin-key}"]
+    ports:
+      - "8088:8088"
+    volumes:
+      - zlog-data:/data/zlog
+volumes:
+  zlog-data:
