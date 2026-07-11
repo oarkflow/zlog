@@ -1,65 +1,41 @@
-# zlog Production Feature Implementation Summary
+# zlog secure audit implementation summary
 
-Implemented production hardening and operational enhancements across the logger, observability platform, CLI, examples, tests, and deployment assets.
+The archive now contains a fully functional stdlib-only secure audit subsystem in addition to the existing high-performance structured logger and observability features.
 
-## Added core production features
+## Implemented
 
-- Secure admin/dashboard wrapper with API key auth, Basic auth, CIDR/IP allow-listing, HTTPS enforcement, read-only mode, and audit logging.
-- `ObservabilityBackend` storage interface so the dashboard is no longer tied to in-memory storage only.
-- Persistent NDJSON-backed observability store for logs, spans, and metrics.
-- Retention and compaction by max age, max records, and max bytes.
-- AES-GCM encrypted file sink with decrypt helper and CLI support.
-- Alert manager with rules for error count, error rate, p95 latency, and silent services.
-- Webhook alert sink and custom `AlertSink` interface.
-- Startup banner with service, version, env, level, format, async, redaction, integrity, sinks, dashboard, admin, host, and PID.
-- YAML/BCL-style key-value config loading via `LoadConfigAuto`.
-- Config validation via `ValidateConfig`.
-- Expanded config fields for encrypted files, sync writes, admin keys, allow CIDRs, observability dir, and retention settings.
+- Deterministic canonical JSON and strict raw-JSON canonicalization.
+- Encrypted authoritative audit records using AES-256-GCM and authenticated envelope metadata.
+- Per-stream sequencing, previous-hash chaining, record IDs, content hashes, and domain-separated Merkle leaves.
+- Append-only Merkle tree, exhaustive inclusion proof verification, and append-consistency proof verification.
+- Signed segment trailers binding canonical segment headers and linked segment roots.
+- Signed global checkpoints chained to prior checkpoints.
+- Ed25519, ECDSA P-256, RSA-PSS, and HMAC checkpoint signers.
+- Historical public-key registry and local key persistence helpers.
+- Independent signed witnesses with consistency-proof, rollback, and equivocation detection.
+- Crash recovery, partial-final-write repair, strict read-only verification, and tamper rejection.
+- Signed legal-hold ledger with stream-wide or record-specific scope.
+- Self-verifying forensic bundles with signed manifests, records, envelopes, proofs, checkpoints, and public keys.
+- Permission-scoped HTTP API, bounded strict JSON, CIDR allow lists, rate limiting, secure headers, and administrative audit events.
+- TLS 1.3 and mTLS HTTP server helper.
+- Authoritative bounded audit queries.
+- Create-only local archive with signed receipts, crash-window receipt recovery, and segment archival.
+- Public-key-only read mode; verification does not require loading private signing keys.
+- Explicit committed-append errors carrying the durable receipt when checkpoint or witness finalization fails.
+- Signed event-catalog manifests, typed field rules, and a fluent validated audit builder.
+- Hardened encrypted-file sink v2 with PBKDF2 passphrases, metadata authentication, deterministic nonce counters within a random nonce domain, concurrency safety, and v1 read compatibility.
+- Safe `Logger.With` and `Named` cloning without copying atomic no-copy state.
+- CLI workflows for initialization, append, verification, proofs, checkpoints, forensic export/verification, and legal holds.
+- Complete persistent example under `examples/secure_audit`.
 
-## Added CLI operations
-
-- `zlog config validate`
-- `zlog config print-effective`
-- `zlog doctor`
-- `zlog stats`
-- `zlog top-errors`
-- `zlog top-services`
-- `zlog export`
-- `zlog serve-dashboard`
-- `zlog compact-observability`
-- `zlog decrypt`
-
-Existing CLI commands retained:
-
-- `zlog tail`
-- `zlog query`
-- `zlog verify`
-- `zlog redact-check`
-
-## Added examples and deployment assets
-
-- `examples/production`: end-to-end production setup with persistent observability, secure admin/dashboard endpoints, alerting, HTTP middleware, spans, integrity, redaction, and startup banner.
-- `deploy/Dockerfile`
-- `deploy/docker-compose.yml`
-- `deploy/zlog.service`
-- `deploy/kubernetes.yaml`
-
-## Added tests
-
-- Secure API-key handler behavior.
-- Persistent observability reload behavior.
-- Startup banner generation.
-- YAML config loading and validation.
-- Alert manager evaluation.
-- NDJSON top-count utility.
-- Encrypted file sink round trip.
-
-## Verification
-
-Executed successfully:
+## Verification performed
 
 ```bash
 go test ./...
+go test -race ./...
+go vet ./...
 go build ./cmd/zlog
-./zlog config validate <(echo '{"level":"info","format":"json"}')
+go run ./examples/secure_audit -dir /tmp/zlog-secure-example
 ```
+
+The CLI was also exercised end to end for secure initialization, append, verification, proof generation, forensic export, forensic verification, legal-hold placement, release, and ledger verification.

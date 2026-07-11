@@ -99,19 +99,29 @@ func NewUltraFast() *Logger {
 func (l *Logger) Enabled(level Level) bool { return l != nil && l.level.Enabled(level) }
 func (l *Logger) SetLevel(level Level)     { l.level.Set(level) }
 func (l *Logger) Level() Level             { return l.level.Get() }
+func (l *Logger) clone() *Logger {
+	cp := &Logger{
+		name: l.name, level: l.level, sink: l.sink,
+		static: append([]Attr(nil), l.static...), callerSkip: l.callerSkip,
+		redactor: l.redactor, fatalExit: l.fatalExit, signer: l.signer,
+		addSequence: l.addSequence,
+	}
+	cp.addCaller.Store(l.addCaller.Load())
+	return cp
+}
 func (l *Logger) With(attrs ...Attr) *Logger {
-	cp := *l
-	cp.static = append(append([]Attr(nil), l.static...), attrs...)
-	return &cp
+	cp := l.clone()
+	cp.static = append(cp.static, attrs...)
+	return cp
 }
 func (l *Logger) Named(name string) *Logger {
-	cp := *l
+	cp := l.clone()
 	if cp.name == "" {
 		cp.name = name
 	} else {
 		cp.name += "." + name
 	}
-	return &cp
+	return cp
 }
 func (l *Logger) WithGroup(name string) *Logger { return l.With(Group(name)) }
 func (l *Logger) AddCaller(v bool)              { l.addCaller.Store(v) }

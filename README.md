@@ -2,6 +2,86 @@
 
 `zlog` is a stdlib-only, async-first, structured Go logger built for high-throughput services. The common hot paths are designed to benchmark at `0 B/op` and `0 allocs/op` when using typed attributes and built-in encoders/sinks.
 
+## Cryptographically verifiable audit logs
+
+For security, compliance, and forensic evidence, use `SecureAuditStore` instead of the lightweight `IntegrityKey` logger option. The secure store is a separate authoritative audit pipeline with the following guarantees:
+
+- Deterministic canonical JSON with duplicate-key, trailing-value, unsupported-type, excessive-depth, and non-finite-number rejection.
+- AES-256-GCM encryption of every canonical audit record; envelope identity, hashes, sequence, segment position, timestamps, algorithm, and key ID are authenticated as AEAD metadata.
+- Strictly increasing per-stream sequence numbers and a SHA-256 chain binding each content hash to its predecessor.
+- Append-only Merkle trees with independently verifiable inclusion and append-consistency proofs.
+- Ed25519, ECDSA P-256, RSA-PSS, or HMAC checkpoint signing through `CheckpointSigner`.
+- Signed segment trailers, segment-root chaining, signed global checkpoints, historical public-key verification, key rotation support, and crash recovery.
+- Independent witness receipts with rollback and same-size split-view/equivocation detection.
+- Signed legal-hold placement and release in a separate append-only ledger.
+- Self-verifying `tar.gz` forensic bundles containing records, original cryptographic envelopes, Merkle proofs, signed checkpoints, signed manifests, and required public keys.
+- Permission-scoped HTTP ingestion and investigation APIs with bearer credentials, CIDR controls, request limits, secure headers, optional TLS enforcement, and a TLS 1.3/mTLS server helper.
+- Create-only local archival with signed receipts and end-to-end object verification.
+
+A minimal persistent setup:
+
+```go
+key, err := zlog.LoadAuditDataKey("zlog-data.key")
+if err != nil {
+    key, err = zlog.GenerateAuditDataKey()
+    if err != nil { panic(err) }
+    if err = zlog.SaveAuditDataKey("zlog-data.key", key); err != nil { panic(err) }
+}
+
+signer, err := zlog.LoadPrivateSigner("zlog-signer.pem", "audit-signing-1")
+if err != nil {
+    signer, err = zlog.GenerateEd25519CheckpointSigner("audit-signing-1")
+    if err != nil { panic(err) }
+    if err = zlog.SavePrivateSigner("zlog-signer.pem", signer, 0o600); err != nil { panic(err) }
+}
+
+store, err := zlog.OpenSecureAuditStore(zlog.SecureAuditOptions{
+    Dir:               "./audit-data",
+    StreamID:          "security",
+    TenantID:          "tenant-a",
+    EncryptionKey:     key,
+    EncryptionKeyID:   "data-key-1",
+    Signer:             signer,
+    CheckpointEvery:    1024,
+    SegmentMaxRecords:  100_000,
+    SegmentMaxBytes:    128 << 20,
+    MaxRecordBytes:     4 << 20,
+    SyncPolicy:         zlog.SyncAlways,
+    RecoverPartial:     true,
+})
+if err != nil { panic(err) }
+defer store.Close()
+
+receipt, err := zlog.NewAuditEvent(store, "user.role.changed").
+    Actor("admin-42").
+    Action("role.assign").
+    Resource("user", "user-100").
+    Outcome("success").
+    Reason("approved request AR-921").
+    Attr("role", "billing-reviewer").
+    Commit(context.Background())
+if err != nil { panic(err) }
+
+proof, err := store.InclusionProof(context.Background(), receipt.RecordID)
+if err != nil { panic(err) }
+if err = zlog.VerifyInclusionProof(proof); err != nil { panic(err) }
+```
+
+Operational CLI workflow:
+
+```bash
+zlog secure init --config secure.json --dir audit-data --stream security --tenant tenant-a
+zlog secure append --config secure.json --record audit-record.json
+zlog secure verify --config secure.json
+zlog secure proof --config secure.json --record-id <record-id>
+zlog secure export --config secure.json --record-ids <id1,id2> --output evidence.tar.gz --reason investigation
+zlog forensic-verify evidence.tar.gz
+zlog legal-hold place --config secure.json --record-ids <id> --reason investigation --actor auditor-1
+zlog legal-hold verify --config secure.json
+```
+
+See [`SECURE_AUDIT.md`](SECURE_AUDIT.md) and [`examples/secure_audit`](examples/secure_audit) for the complete architecture and runnable workflow.
+
 ## Production-ready features included
 
 - Stdlib only: no third-party dependencies.
@@ -619,12 +699,12 @@ zlog compact-observability --dir .zlog-observability --max-age 168h --max-record
 
 ### Encrypted log files
 
-`NewEncryptedFileSink` encrypts each encoded log record with AES-GCM. Non-16/24/32 byte keys are normalized using SHA-256.
+`NewEncryptedFileSink` writes authenticated AES-256-GCM v2 envelopes. A 32-byte `Key` is used directly; `Passphrase` (or a legacy non-32-byte `Key` call) is processed with PBKDF2-HMAC-SHA-256. The reader remains compatible with v1 files.
 
 ```go
 sink, err := zlog.NewEncryptedFileSink(zlog.EncryptedFileOptions{
     Path: "secure-logs.ndjson",
-    Key: []byte(os.Getenv("ZLOG_FILE_KEY")),
+    Passphrase: []byte(os.Getenv("ZLOG_FILE_PASSPHRASE")),
     KeyID: "prod-2026-07",
     Level: zlog.InfoLevel,
 })
@@ -633,7 +713,7 @@ sink, err := zlog.NewEncryptedFileSink(zlog.EncryptedFileOptions{
 Decrypt locally with:
 
 ```bash
-zlog decrypt --key "$ZLOG_FILE_KEY" secure-logs.ndjson
+zlog decrypt --key "$ZLOG_FILE_PASSPHRASE" secure-logs.ndjson
 ```
 
 ### Alerting engine
@@ -677,7 +757,7 @@ zlog top-services --limit 20 ./app.ndjson
 zlog export --format json --level error ./app.ndjson
 zlog serve-dashboard --addr :8088 --dir .zlog-observability --api-key dev-admin-key
 zlog compact-observability --dir .zlog-observability --max-age 168h
-zlog decrypt --key "$ZLOG_FILE_KEY" ./secure-logs.ndjson
+zlog decrypt --key "$ZLOG_FILE_PASSPHRASE" ./secure-logs.ndjson
 ```
 
 ### Startup banner
