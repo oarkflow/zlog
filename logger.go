@@ -19,6 +19,8 @@ type Logger struct {
 	fatalExit   func(int)
 	signer      *IntegritySigner
 	addSequence bool
+	cachedTime  bool
+	fastStatic  []byte
 }
 
 type Options struct {
@@ -36,6 +38,8 @@ type Options struct {
 	AddPID           bool
 	TimeLayout       string
 	TimeFormat       string
+	CachedTime       bool
+	DisableStats     bool
 	ConsoleColor     *bool
 	Prettify         *bool
 	KVSeparator      string
@@ -73,7 +77,8 @@ func New(opts Options) *Logger {
 		static = append(static, Int("process.pid", os.Getpid()))
 	}
 	redactor.RedactAttrs(static)
-	l := &Logger{name: opts.Name, level: lvl, sink: sink, static: static, callerSkip: 6, redactor: redactor, fatalExit: os.Exit, addSequence: opts.AddSequence || len(opts.IntegrityKey) > 0}
+	l := &Logger{name: opts.Name, level: lvl, sink: sink, static: static, callerSkip: 6, redactor: redactor, fatalExit: os.Exit, addSequence: opts.AddSequence || len(opts.IntegrityKey) > 0, cachedTime: opts.CachedTime}
+	l.fastStatic = encodeStaticAttrs(static)
 	if opts.FatalExit != nil {
 		l.fatalExit = opts.FatalExit
 	}
@@ -105,13 +110,30 @@ func (l *Logger) clone() *Logger {
 		static: append([]Attr(nil), l.static...), callerSkip: l.callerSkip,
 		redactor: l.redactor, fatalExit: l.fatalExit, signer: l.signer,
 		addSequence: l.addSequence,
+		cachedTime:  l.cachedTime,
+		fastStatic:  append([]byte(nil), l.fastStatic...),
 	}
 	cp.addCaller.Store(l.addCaller.Load())
 	return cp
 }
+
+func (l *Logger) now() time.Time {
+	if l.cachedTime {
+		return cachedNow()
+	}
+	return time.Now()
+}
+
+func (l *Logger) timestamp() (time.Time, string) {
+	if l.cachedTime {
+		return cachedTimestamp()
+	}
+	return time.Now(), ""
+}
 func (l *Logger) With(attrs ...Attr) *Logger {
 	cp := l.clone()
 	cp.static = append(cp.static, attrs...)
+	cp.fastStatic = encodeStaticAttrs(cp.static)
 	return cp
 }
 func (l *Logger) Named(name string) *Logger {
@@ -171,14 +193,62 @@ func (l *Logger) Info(msg string, attrs ...Attr) {
 	}
 	l.writeSlice(InfoLevel, msg, attrs)
 }
-func (l *Logger) Info0(msg string)         { l.Log0(InfoLevel, msg) }
-func (l *Logger) Info1(msg string, a Attr) { l.Log1(InfoLevel, msg, a) }
+func (l *Logger) Info0(msg string) {
+	if !l.level.Enabled(InfoLevel) {
+		return
+	}
+	l.writeSlice(InfoLevel, msg, nil)
+}
+func (l *Logger) Info1(msg string, a Attr) {
+	if !l.level.Enabled(InfoLevel) {
+		return
+	}
+	if s, ok := l.sink.(*WriterSink); ok && s.fastJSON && fastValueSupported(a) && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled && s.sampler == nil {
+		_, ts := l.timestamp()
+		if ts != "" {
+			_ = s.writeFast1(InfoLevel, msg, a, l.fastStatic, ts)
+			return
+		}
+	}
+	l.write1(InfoLevel, msg, a)
+}
+
+func (l *Logger) Info10(msg string, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 Attr) {
+	if !l.level.Enabled(InfoLevel) {
+		return
+	}
+	if s, ok := l.sink.(*WriterSink); ok && s.fastJSON && fastValueSupported(a1) && fastValueSupported(a2) && fastValueSupported(a3) && fastValueSupported(a4) && fastValueSupported(a5) && fastValueSupported(a6) && fastValueSupported(a7) && fastValueSupported(a8) && fastValueSupported(a9) && fastValueSupported(a10) && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled && s.sampler == nil {
+		_, ts := l.timestamp()
+		if ts != "" {
+			_ = s.writeFast10(InfoLevel, msg, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, l.fastStatic, ts)
+			return
+		}
+	}
+	l.Info(msg, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
+}
+
+// Info10Primitive emits a fixed ten-field primitive record without generic
+// attribute dispatch. It is useful for stable, high-volume record shapes.
+func (l *Logger) Info10Primitive(msg, k1, v1, k2, v2 string, k3 string, v3 int, k4 string, v4 int, k5 string, v5 int, k6 string, v6 int, k7 string, v7 int, k8 string, v8 int, k9 string, v9 bool, k10 string, v10 bool) {
+	if !l.level.Enabled(InfoLevel) {
+		return
+	}
+	if s, ok := l.sink.(*WriterSink); ok && s.fastJSON && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled && s.sampler == nil {
+		_, ts := l.timestamp()
+		if ts != "" {
+			_ = s.writeFast10Primitive(InfoLevel, msg, k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9, k10, v10, l.fastStatic, ts)
+			return
+		}
+	}
+	l.Info(msg, String(k1, v1), String(k2, v2), Int(k3, v3), Int(k4, v4), Int(k5, v5), Int(k6, v6), Int(k7, v7), Int(k8, v8), Bool(k9, v9), Bool(k10, v10))
+}
 func (l *Logger) Info2(msg string, a, b Attr) {
 	if !l.Enabled(InfoLevel) {
 		return
 	}
 	l.write2(InfoLevel, msg, a, b)
 }
+
 func (l *Logger) Notice(msg string, attrs ...Attr) {
 	if !l.Enabled(NoticeLevel) {
 		return
@@ -251,7 +321,22 @@ func (l *Logger) writeSlice(level Level, msg string, attrs []Attr) {
 }
 
 func (l *Logger) writeSliceSkip(level Level, msg string, attrs []Attr, skip int) {
-	r := Record{Time: time.Now(), Level: level, Message: msg, Logger: l.name}
+	if a, ok := l.sink.(*AsyncSink); ok && a.ringMode && len(attrs) == 0 && len(l.static) == 0 && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled {
+		now, timeText := l.timestamp()
+		if timeText != "" {
+			_ = a.WriteFast(level, msg, now, timeText, nil)
+			return
+		}
+	}
+	if s, ok := l.sink.(*WriterSink); ok && s.fastJSON && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled && s.sampler == nil {
+		_, timeText := l.timestamp()
+		if timeText != "" {
+			_ = s.writeFast(level, msg, attrs, l.fastStatic, timeText)
+			return
+		}
+	}
+	now, timeText := l.timestamp()
+	r := Record{Time: now, TimeText: timeText, Level: level, Message: msg, Logger: l.name}
 	if l.addSequence {
 		r.Sequence = nextSeq()
 	}
@@ -265,8 +350,18 @@ func (l *Logger) writeSliceSkip(level Level, msg string, attrs []Attr, skip int)
 	}
 	_ = l.sink.WriteRecord(r, l.static)
 }
+
 func (l *Logger) write1(level Level, msg string, a Attr) {
-	r := Record{Time: time.Now(), Level: level, Message: msg, Logger: l.name}
+	if s, ok := l.sink.(*WriterSink); ok && s.fastJSON && !l.addCaller.Load() && l.signer == nil && !l.redactor.Enabled && s.sampler == nil {
+		_, timeText := l.timestamp()
+		if timeText != "" {
+			attrs := [1]Attr{a}
+			_ = s.writeFast(level, msg, attrs[:], l.fastStatic, timeText)
+			return
+		}
+	}
+	now, timeText := l.timestamp()
+	r := Record{Time: now, TimeText: timeText, Level: level, Message: msg, Logger: l.name}
 	if l.addSequence {
 		r.Sequence = nextSeq()
 	}
@@ -285,7 +380,8 @@ func (l *Logger) write1(level Level, msg string, a Attr) {
 }
 
 func (l *Logger) write2(level Level, msg string, a, b Attr) {
-	r := Record{Time: time.Now(), Level: level, Message: msg, Logger: l.name}
+	now, timeText := l.timestamp()
+	r := Record{Time: now, TimeText: timeText, Level: level, Message: msg, Logger: l.name}
 	if l.addSequence {
 		r.Sequence = nextSeq()
 	}

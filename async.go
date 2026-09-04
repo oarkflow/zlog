@@ -22,27 +22,45 @@ type AsyncOptions struct {
 	FlushInterval  time.Duration
 	DropPolicy     DropPolicy
 	EmergencyLevel Level
+	DisableStats   bool
 }
 
 type asyncItem struct {
-	r      Record
-	static []Attr
+	r        Record
+	static   []Attr
+	fast     bool
+	level    Level
+	msg      string
+	time     time.Time
+	timeText string
+}
+
+type asyncCell struct {
+	seq  atomic.Uint64
+	item asyncItem
 }
 
 type flushReq struct{ done chan error }
 
 type AsyncSink struct {
-	sink    Sink
-	slots   []asyncItem
-	free    chan int
-	ready   chan int
-	flushCh chan flushReq
-	opts    AsyncOptions
-	done    chan struct{}
-	closed  atomic.Bool
-	dropped atomic.Uint64
-	queued  atomic.Int64
-	wg      sync.WaitGroup
+	sink     Sink
+	slots    []asyncItem
+	free     chan int
+	ready    chan int
+	flushCh  chan flushReq
+	opts     AsyncOptions
+	done     chan struct{}
+	closed   atomic.Bool
+	dropped  atomic.Uint64
+	queued   atomic.Int64
+	wg       sync.WaitGroup
+	ringMode bool
+	ring     []asyncCell
+	ringMask uint64
+	writePos atomic.Uint64
+	readPos  atomic.Uint64
+	ringWake chan struct{}
+	statsOn  bool
 }
 
 func NewAsyncSink(s Sink, opts AsyncOptions) *AsyncSink {
@@ -59,6 +77,16 @@ func NewAsyncSink(s Sink, opts AsyncOptions) *AsyncSink {
 		opts.EmergencyLevel = FatalLevel
 	}
 	a := &AsyncSink{sink: s, slots: make([]asyncItem, opts.Capacity), free: make(chan int, opts.Capacity), ready: make(chan int, opts.Capacity), flushCh: make(chan flushReq), opts: opts, done: make(chan struct{})}
+	a.statsOn = !opts.DisableStats
+	if opts.DropPolicy == DropNewest && opts.Capacity&(opts.Capacity-1) == 0 {
+		a.ringMode = true
+		a.ring = make([]asyncCell, opts.Capacity)
+		a.ringMask = uint64(opts.Capacity - 1)
+		a.ringWake = make(chan struct{}, 1)
+		for i := range a.ring {
+			a.ring[i].seq.Store(uint64(i))
+		}
+	}
 	for i := 0; i < opts.Capacity; i++ {
 		a.free <- i
 	}
@@ -70,6 +98,9 @@ func NewAsyncSink(s Sink, opts AsyncOptions) *AsyncSink {
 func (a *AsyncSink) WriteRecord(r Record, static []Attr) error {
 	if a.closed.Load() {
 		return ErrClosed
+	}
+	if a.ringMode {
+		return a.writeRing(r, static)
 	}
 	switch a.opts.DropPolicy {
 	case DropBlock:
@@ -133,12 +164,63 @@ func (a *AsyncSink) WriteRecord(r Record, static []Attr) error {
 	}
 }
 
+func (a *AsyncSink) writeRing(r Record, static []Attr) error {
+	return a.writeRingItem(asyncItem{r: r, static: static})
+}
+
+func (a *AsyncSink) WriteFast(level Level, msg string, now time.Time, timeText string, static []Attr) error {
+	return a.writeRingItem(asyncItem{fast: true, level: level, msg: msg, time: now, timeText: timeText, static: static})
+}
+
+func (a *AsyncSink) writeRingItem(item asyncItem) error {
+	for pos := a.writePos.Load(); ; pos = a.writePos.Load() {
+		cell := &a.ring[pos&a.ringMask]
+		seq := cell.seq.Load()
+		dif := int64(seq - pos)
+		if dif == 0 {
+			wasEmpty := a.readPos.Load() == pos
+			if !a.writePos.CompareAndSwap(pos, pos+1) {
+				continue
+			}
+			if item.fast {
+				cell.item.fast = true
+				cell.item.level = item.level
+				cell.item.msg = item.msg
+				cell.item.time = item.time
+				cell.item.timeText = item.timeText
+				cell.item.static = item.static
+			} else {
+				cell.item = item
+			}
+			cell.seq.Store(pos + 1)
+			if a.statsOn {
+				a.queued.Add(1)
+			}
+			if wasEmpty {
+				select {
+				case a.ringWake <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		}
+		if dif < 0 {
+			if a.statsOn {
+				a.dropped.Add(1)
+			}
+			return nil
+		}
+	}
+}
+
 func (a *AsyncSink) loop() {
 	defer a.wg.Done()
 	t := time.NewTicker(a.opts.FlushInterval)
 	defer t.Stop()
 	for {
 		select {
+		case <-a.ringWake:
+			a.drainRing(a.opts.BatchSize)
 		case idx := <-a.ready:
 			a.writeIndex(idx)
 			a.drainBatch(a.opts.BatchSize - 1)
@@ -173,6 +255,11 @@ func (a *AsyncSink) drainBatch(n int) {
 	}
 }
 func (a *AsyncSink) drainAll() {
+	if a.ringMode {
+		for a.drainRing(a.opts.BatchSize) > 0 {
+		}
+		return
+	}
 	for {
 		select {
 		case idx := <-a.ready:
@@ -181,6 +268,33 @@ func (a *AsyncSink) drainAll() {
 			return
 		}
 	}
+}
+
+func (a *AsyncSink) drainRing(n int) int {
+	count := 0
+	for count < n {
+		pos := a.readPos.Load()
+		cell := &a.ring[pos&a.ringMask]
+		if cell.seq.Load() != pos+1 {
+			return count
+		}
+		if !a.readPos.CompareAndSwap(pos, pos+1) {
+			continue
+		}
+		it := cell.item
+		cell.item = asyncItem{}
+		cell.seq.Store(pos + uint64(len(a.ring)))
+		if a.statsOn {
+			a.queued.Add(-1)
+		}
+		if it.fast {
+			_ = a.sink.WriteRecord(Record{Time: it.time, TimeText: it.timeText, Level: it.level, Message: it.msg}, it.static)
+		} else {
+			_ = a.sink.WriteRecord(it.r, it.static)
+		}
+		count++
+	}
+	return count
 }
 func (a *AsyncSink) Flush() error {
 	if a.closed.Load() {

@@ -21,7 +21,11 @@ func (e *JSONEncoder) Encode(buf *bytes.Buffer, r Record, static []Attr) error {
 	first := false
 	if e.Schema == SchemaNative {
 		buf.WriteString(`"time":"`)
-		appendTime(buf, r.Time, e.TimeFormat)
+		if r.TimeText != "" && e.TimeFormat == time.RFC3339Nano {
+			buf.WriteString(r.TimeText)
+		} else {
+			appendTime(buf, r.Time, e.TimeFormat)
+		}
 		buf.WriteString(`","level":"`)
 		buf.WriteString(r.Level.String())
 		buf.WriteString(`","message":`)

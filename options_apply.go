@@ -1,6 +1,9 @@
 package zlog
 
-import "time"
+import (
+	"io"
+	"time"
+)
 
 func applyEncoderOptions(s Sink, opts Options) {
 	if s == nil {
@@ -9,6 +12,11 @@ func applyEncoderOptions(s Sink, opts Options) {
 	switch x := s.(type) {
 	case *WriterSink:
 		applyEncoderConfig(x.enc, opts)
+		x.statsOn = !opts.DisableStats
+		x.noLock = !x.statsOn && x.w == io.Discard
+		if enc, ok := x.enc.(*JSONEncoder); ok {
+			x.fastJSON = opts.DisableRedaction && enc.Schema == SchemaNative
+		}
 	case *MultiSink:
 		for _, child := range x.sinks {
 			applyEncoderOptions(child, opts)

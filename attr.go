@@ -26,14 +26,15 @@ const (
 )
 
 type Attr struct {
-	Key   string
-	Kind  Kind
-	I64   int64
-	U64   uint64
-	Str   string
-	Bytes []byte
-	Group []Attr
-	Any   any
+	Key     string
+	Kind    Kind
+	I64     int64
+	U64     uint64
+	Str     string
+	Bytes   []byte
+	Group   []Attr
+	Any     any
+	keyJSON string
 }
 
 func String(k, v string) Attr       { return Attr{Key: k, Kind: KindString, Str: v} }
