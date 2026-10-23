@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/syslog"
 	"net/http"
 	"os"
 	"runtime"
@@ -280,15 +279,6 @@ func ContextFromHTTP(r *http.Request) context.Context {
 		lc.Baggage = b
 	}
 	return ContextWithLogContext(ctx, lc)
-}
-
-// Syslog sink.
-func NewSyslogSink(network, raddr, tag string, priority syslog.Priority) (Sink, error) {
-	w, err := syslog.Dial(network, raddr, priority, tag)
-	if err != nil {
-		return nil, err
-	}
-	return NewWriterSink(w, NewLogfmtEncoder(), TraceLevel), nil
 }
 
 // Integrity verification for records or zlog native JSON lines.
